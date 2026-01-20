@@ -19,8 +19,8 @@ Does estimated dealer gamma exposure (GEX) meaningfully improve the probability-
 
 Two hypotheses are tested:
 
-1. Positive gamma regimes suppress realized volatility and favor mean reversion.
-2. Negative gamma regimes amplify moves and favor trend continuation.
+1. **Positive gamma regimes** suppress realized volatility and favor mean reversion.
+2. **Negative gamma regimes** amplify moves and favor trend continuation.
 
 This article shows the standardized experiment design, the metrics, and what was learned. It is educational research only and does not provide trading advice.
 
@@ -28,134 +28,171 @@ This article shows the standardized experiment design, the metrics, and what was
 
 We use SPY intraday OHLCV bars and time-align them with an options-chain-derived estimate of dealer gamma exposure at the same timestamps.
 
-- Underlying: SPY
-- Bar size: 5-minute
-- Sample length: multiple years (enough to cover varied volatility regimes)
-- Signal timestamp: decision computed on bar close, trade executed on next bar open
-- Slippage/fees: applied consistently across all strategies in the benchmark set
+| Parameter | Value |
+|-----------|-------|
+| **Underlying** | SPY |
+| **Bar size** | 5-minute |
+| **Sample length** | Multiple years (varied volatility regimes) |
+| **Signal timestamp** | Decision on bar close, execute on next bar open |
+| **Slippage/fees** | Applied consistently across all strategies |
 
-If you replicate this, the most important requirement is alignment discipline: never let future option-chain snapshots leak into past bars, and never compute indicators with lookahead.
+**Critical requirement:** Alignment discipline is essential. Never let future option-chain snapshots leak into past bars, and never compute indicators with lookahead bias.
 
 ## Feature definition
 
-At each decision time, compute:
+At each decision time, compute the following features:
 
-- `gex_net`: signed net gamma exposure estimate (positive or negative)
-- `gamma_flip_level`: price level where net gamma changes sign (if available)
-- `distance_to_flip`: `price - gamma_flip_level` (signed)
-- `atr_14`: 14-period ATR on 5-minute bars
-- `vwap_session`: session VWAP (intraday)
-- `range_position`: where price sits within the last N-bar range
+- **`gex_net`** — Signed net gamma exposure estimate (positive or negative)
+- **`gamma_flip_level`** — Price level where net gamma changes sign (if available)
+- **`distance_to_flip`** — `price - gamma_flip_level` (signed distance)
+- **`atr_14`** — 14-period Average True Range on 5-minute bars
+- **`vwap_session`** — Session VWAP (intraday)
+- **`range_position`** — Where price sits within the last N-bar range
 
-Only `gex_net` is required for the core split test. The other fields are used for robustness checks and diagnostics.
+**Note:** Only `gex_net` is required for the core split test. The other fields support robustness checks and diagnostics.
 
 ## Regime definitions
 
 We define regimes using a simple thresholded sign split:
 
-- Positive gamma regime: `gex_net > 0`
-- Negative gamma regime: `gex_net < 0`
+- **Positive gamma regime:** `gex_net > 0`
+- **Negative gamma regime:** `gex_net < 0`
+- **Neutral regime (optional):** `|gex_net| <= epsilon` (analyzed separately or ignored)
 
-Optional robustness check:
-
-- Neutral regime: `|gex_net| <= epsilon` (ignored or analyzed separately)
-
-The point is to avoid tuning regime boundaries to fit the sample.
+The goal is to avoid tuning regime boundaries to fit the sample—keep it simple.
 
 ## Strategy set
 
-We benchmark two minimal strategies. Each is run only when its regime condition is satisfied.
+We benchmark two minimal strategies. Each executes only when its regime condition is satisfied.
 
-### Strategy A: mean reversion in positive gamma
+### Strategy A: Mean reversion in positive gamma
 
-Entry condition (evaluated on bar close):
+**Entry condition** (evaluated on bar close):
 
-- `gex_net > 0`
+- `gex_net > 0` (positive gamma regime active)
 - Price is stretched from VWAP: `abs(price - vwap_session) >= 1.0 * atr_14`
 - Direction is toward VWAP:
-  - If price > VWAP, enter short.
-  - If price < VWAP, enter long.
+  - If `price > VWAP` → enter **short**
+  - If `price < VWAP` → enter **long**
 
-Risk and exit:
+**Risk and exit:**
 
-- Stop: `0.75 * atr_14`
-- Target: VWAP touch, or `1.0 * atr_14` profit, whichever occurs first
-- Time stop: exit after 6 bars if neither stop nor target hits
+- **Stop loss:** `0.75 * atr_14`
+- **Take profit:** VWAP touch or `1.0 * atr_14` profit (whichever occurs first)
+- **Time stop:** Exit after 6 bars if neither stop nor target is hit
 
-### Strategy B: momentum in negative gamma
+### Strategy B: Momentum in negative gamma
 
-Entry condition (evaluated on bar close):
+**Entry condition** (evaluated on bar close):
 
-- `gex_net < 0`
-- Breakout confirmation: close above prior 30-minute high for long, or below prior 30-minute low for short
-- Optional filter: volume above rolling median (kept off by default)
+- `gex_net < 0` (negative gamma regime active)
+- **Breakout confirmation:**
+  - Long entry: close above prior 30-minute high
+  - Short entry: close below prior 30-minute low
+- **Optional filter:** Volume above rolling median (disabled by default)
 
-Risk and exit:
+**Risk and exit:**
 
-- Stop: `0.50 * atr_14`
-- Target: `1.50 * atr_14`
-- Time stop: exit after 8 bars
+- **Stop loss:** `0.50 * atr_14`
+- **Take profit:** `1.50 * atr_14`
+- **Time stop:** Exit after 8 bars
 
-These are intentionally simple. The goal is to test whether regime segmentation adds measurable edge, not to build an optimized trading system.
+**Design philosophy:** These strategies are intentionally simple. The goal is to test whether regime segmentation adds measurable edge, not to build an optimized trading system.
 
 ## Metrics
 
-We track:
+We track the following performance indicators for each strategy:
 
-- Win rate
-- Average R (return in units of initial risk)
-- Profit factor
-- Max drawdown (equity curve)
-- Sharpe (on trade returns, consistent method)
-- Trade frequency and time-in-market
-- Stability across volatility regimes (e.g., low-vol vs high-vol subperiods)
+- **Win rate** — Percentage of profitable trades
+- **Average R** — Return in units of initial risk
+- **Profit factor** — Gross profit / gross loss
+- **Max drawdown** — Peak-to-trough decline on equity curve
+- **Sharpe ratio** — Risk-adjusted returns (on trade returns, consistent methodology)
+- **Trade frequency** — Number of signals and time-in-market
+- **Stability across regimes** — Performance in low-vol vs high-vol subperiods
 
-All strategies are evaluated under the same slippage and fill assumptions.
+All strategies evaluated under identical slippage and fill assumptions.
 
 ## Results summary
 
-The exact numbers vary by sample and execution assumptions, but the pattern is typically:
+The exact numbers vary by sample and execution assumptions, but the typical pattern is:
 
-- Positive gamma mean reversion shows fewer large adverse moves and a smoother equity curve.
-- Negative gamma momentum shows higher dispersion (both better winners and worse losers) and is more sensitive to slippage.
+- **Positive gamma mean reversion:** Fewer large adverse moves, smoother equity curve
+- **Negative gamma momentum:** Higher dispersion (larger winners and losers), more sensitive to slippage
 
-Example summary table (illustrative format for your platform):
+### Example summary table
 
-| Regime / Strategy | Trades | Win rate | Avg R | Profit factor | Max DD |
-|---|---:|---:|---:|---:|---:|
-| Positive gamma / Mean reversion | 420 | 0.58 | 0.18 | 1.21 | -0.018 |
-| Negative gamma / Momentum | 310 | 0.54 | 0.22 | 1.17 | -0.024 |
+| Regime / Strategy | Trades | Win Rate | Avg R | Profit Factor | Max DD |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Positive gamma / Mean reversion | 420 | 58% | +0.18 | 1.21 | −1.8% |
+| Negative gamma / Momentum | 310 | 54% | +0.22 | 1.17 | −2.4% |
 
-Interpretation guidance:
+### Interpretation guidance
 
-- If Avg R is positive but tiny, execution costs can erase it.
-- If Max DD is meaningfully worse in negative gamma, position sizing must reflect regime risk.
-- If trade count collapses when thresholds tighten, the signal may be too sparse to matter.
+- **Tiny Avg R:** Even positive returns can be erased by execution costs. Make sure the edge is large enough to matter.
+- **High Max DD in negative gamma:** Position sizing must reflect regime risk. Negative gamma requires tighter risk controls.
+- **Trade count collapse:** If thresholds tighten and signal frequency drops dramatically, the edge may be too sparse to trade profitably.
 
 ## Diagnostics and failure modes
 
-The biggest failure modes we observe when people try to trade gamma concepts:
+The biggest failure modes we observe when practitioners try to trade gamma concepts:
 
-1. Timestamp mismatch: the options snapshot is not aligned to the exact time the trade decision is made.
-2. Overfitting the flip: using a flip level that is computed with later data or revised chains.
-3. Ignoring liquidity: negative gamma can coincide with thin books, widening spreads, and worse fills.
-4. Treating GEX as causal: gamma exposure may correlate with other forces but does not guarantee direction.
-5. Not separating regime from signal: the regime is context, not a trade trigger by itself.
+1. **Timestamp mismatch** — Options snapshot not aligned to exact trade decision time.
+2. **Overfitting the flip** — Using flip levels computed with future data or revised chains.
+3. **Ignoring liquidity** — Negative gamma often coincides with thin books, wide spreads, and worse fills.
+4. **Treating GEX as causal** — Gamma exposure correlates with other forces but does not guarantee direction.
+5. **Confusing regime with signal** — Regime is context/filter, not a standalone trade trigger.
 
-A practical approach is to treat regime as a volatility/behavior filter and require an independent entry logic.
+**Best practice:** Treat regime as a volatility/behavior filter. Require independent entry logic separate from the regime signal.
 
 ## Minimal pseudocode
 
-```js
-// Decision computed on bar close; execute next open (no lookahead).
+```javascript
+// Decision computed on bar close; execute on next open (no lookahead).
 if (gex_net > 0) {
-  // Mean reversion
+  // MEAN REVERSION IN POSITIVE GAMMA
   if (Math.abs(close - vwap) >= 1.0 * atr) {
-    if (close > vwap) enterShort({ stop: 0.75 * atr, take: 1.0 * atr, timeStopBars: 6 });
-    else enterLong({ stop: 0.75 * atr, take: 1.0 * atr, timeStopBars: 6 });
+    if (close > vwap) {
+      enterShort({
+        stop: 0.75 * atr,
+        take: 1.0 * atr,
+        timeStopBars: 6
+      });
+    } else {
+      enterLong({
+        stop: 0.75 * atr,
+        take: 1.0 * atr,
+        timeStopBars: 6
+      });
+    }
   }
 } else if (gex_net < 0) {
-  // Momentum
-  if (close > prior30mHigh) enterLong({ stop: 0.50 * atr, take: 1.50 * atr, timeStopBars: 8 });
-  if (close < prior30mLow)  enterShort({ stop: 0.50 * atr, take: 1.50 * atr, timeStopBars: 8 });
+  // MOMENTUM IN NEGATIVE GAMMA
+  if (close > prior30mHigh) {
+    enterLong({
+      stop: 0.50 * atr,
+      take: 1.50 * atr,
+      timeStopBars: 8
+    });
+  }
+  if (close < prior30mLow) {
+    enterShort({
+      stop: 0.50 * atr,
+      take: 1.50 * atr,
+      timeStopBars: 8
+    });
+  }
 }
+```
+
+## Key takeaways
+
+- **Gamma regime matters:** Dealer gamma exposure does correlate with SPY behavior across the sample.
+- **Simple works:** Complex optimization isn't necessary; a clean regime split + basic entry logic shows measurable edge.
+- **Execution is everything:** The difference between theory and practice is fees, slippage, and missed fills.
+- **Regime stability:** Mean reversion in positive gamma is more consistent; negative gamma momentum is lumpier but can have larger winners.
+- **Risk management:** Position size and stops must account for regime volatility. Don't trade the same contract size in both regimes.
+
+## Educational disclaimer
+
+This content is educational and informational only. It is not investment advice. Past performance and hypothetical results do not predict future outcomes. Trading and investment carry significant risk of loss. You are solely responsible for your decisions. Consult a qualified financial advisor before making investment decisions.
